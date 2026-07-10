@@ -1,0 +1,10 @@
+{
+  "appId": "com.synergyscience.sscai",
+  "appName": "SSC AI",
+  "webDir": "frontend",
+  "bundledWebRuntime": false,
+  "backgroundColor": "#060d16",
+  "android": {
+    "allowMixedContent": false
+  }
+}
