@@ -1,0 +1,13 @@
+{
+  "name": "SSC AI — Synergy Science Circle",
+  "short_name": "SSC AI",
+  "description": "United by Logic, Driven by Science. The official AI assistant of Synergy Science Circle.",
+  "start_url": "./ssc-ai.html",
+  "display": "standalone",
+  "background_color": "#060d16",
+  "theme_color": "#0a1622",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "assets/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
