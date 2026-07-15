@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ssc-ai-backend
+    name: ssc-ai
     runtime: node
     plan: free
     region: oregon
