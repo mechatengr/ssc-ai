@@ -9,7 +9,7 @@
    0. CONFIG + STATE
 --------------------------------------------------------------------------- */
 const DEFAULTS = {
-  backendUrl: localStorage.getItem("ssc_backend_url") || "https://YOUR-BACKEND-URL.onrender.com",
+  backendUrl: localStorage.getItem("ssc_backend_url") || "http://ssc-ai.onrender.com",
   theme: localStorage.getItem("ssc_theme") || "dark",
   persona: "researcher",
   model: "gemini-2.5-flash",
