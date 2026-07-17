@@ -31,6 +31,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
       - name: Install project dependencies
         run: npm install
 
@@ -47,7 +50,7 @@ jobs:
             dir="android/app/src/main/res/mipmap-$density"
             mkdir -p "$dir"
             convert frontend/assets/logo.png -resize ${size}x${size} "$dir/ic_launcher.png"
-            convert frontend/assets/logo.png -resize ${size}x${size} \( +clone -alpha extract -fill black -colorize 100 -fill white -draw "circle $((size/2)),$((size/2)) $((size/2)),0" \) -alpha off -compose CopyOpacity -composite "$dir/ic_launcher_round.png"
+            convert frontend/assets/logo.png -resize ${size}x${size} \( +clone -alpha extract -fill black -colorize 100 -fill white -draw "circle $((size/2)),$((size/2)) $((size/2)),0" \) -alpha overlay -compose copy_opacity -composite "$dir/ic_launcher_foreground.png"
           done
 
       - name: Sync web assets into the Android project
