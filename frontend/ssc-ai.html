@@ -190,6 +190,9 @@ button{ font-family:inherit; }
   border:1px solid var(--border); word-wrap:break-word;
 }
 .msg-row.user .bubble{ background:var(--bubble-user); border-color:rgba(217,179,77,.18); }
+.error-placeholder{ display:flex; flex-direction:column; align-items:flex-start; }
+.error-placeholder > span{ color:var(--danger); font-size:13.6px; line-height:1.5; }
+.error-placeholder .btn{ font-size:12px; padding:6px 14px; }
 .bubble p{ margin:0 0 .7em; }
 .bubble p:last-child{ margin-bottom:0; }
 .bubble ul,.bubble ol{ margin:.4em 0; padding-left:1.4em; }
@@ -224,8 +227,16 @@ button{ font-family:inherit; }
 .thinking-block summary{ cursor:pointer; color:var(--gold); font-weight:600; }
 
 .msg-meta{ display:flex; gap:10px; align-items:center; font-size:10.6px; color:var(--text-dim); padding:0 4px; }
-.msg-actions{ display:flex; gap:4px; opacity:0; transition:.2s; }
-.msg-row:hover .msg-actions{ opacity:1; }
+.msg-actions{ display:flex; gap:4px; transition:.2s; }
+/* Only hide-until-hover on devices that actually support hover with a
+   precise pointer (mouse/trackpad). Touchscreens (Android, iOS, tablets)
+   have no hover state, so hiding these behind :hover made them invisible
+   and untappable there — they stay visible by default and only get the
+   hover-reveal treatment on desktop. */
+@media (hover: hover) and (pointer: fine) {
+  .msg-actions{ opacity:0; }
+  .msg-row:hover .msg-actions{ opacity:1; }
+}
 .msg-actions button{
   width:26px; height:26px; border-radius:8px; border:none; background:transparent; color:var(--text-dim);
   cursor:pointer; display:flex; align-items:center; justify-content:center; transition:.15s;
@@ -392,6 +403,10 @@ button, .composer-btn, .icon-btn, .toggle-chip, .dd-trigger, .suggest-chip, .ses
   overflow:hidden; text-overflow:ellipsis; max-width:180px; transition:.2s;
 }
 .source-chip:hover{ border-color:var(--gold); background:rgba(217,179,77,.14); }
+.source-chip .provider-badge{
+  font-size:8.5px; font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.03em;
+  opacity:.65; margin-right:5px; padding:1px 4px; border-radius:4px; background:rgba(255,255,255,.06);
+}
 
 /* Scroll-to-bottom floating action button */
 #scroll-bottom-fab{
@@ -482,7 +497,7 @@ button, .composer-btn, .icon-btn, .toggle-chip, .dd-trigger, .suggest-chip, .ses
       <div class="topbar-controls" id="topbar-controls">
         <div class="dd-trigger" id="persona-trigger" data-dd="persona"><span id="persona-label">Researcher</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg></div>
         <div class="dd-trigger" id="model-trigger" data-dd="model"><span id="model-label" class="dd-label-full">Flash</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg></div>
-        <div class="toggle-chip" id="websearch-toggle" title="Google Search grounding (built into Gemini — no extra setup)">
+        <div class="toggle-chip" id="websearch-toggle" title="Hybrid web search: Gemini's built-in Google Search grounding + DuckDuckGo instant answers — no extra setup">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20z"/></svg>
           <span class="tc-label">Search</span>
         </div>
