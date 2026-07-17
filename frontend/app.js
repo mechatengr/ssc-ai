@@ -9,7 +9,7 @@
    0. CONFIG + STATE
 --------------------------------------------------------------------------- */
 const DEFAULTS = {
-  backendUrl: localStorage.getItem("ssc_backend_url") || "http://ssc-ai.onrender.com",
+  backendUrl: localStorage.getItem("ssc_backend_url") || "https://YOUR-BACKEND-URL.onrender.com",
   theme: localStorage.getItem("ssc_theme") || "dark",
   persona: "researcher",
   model: "gemini-2.5-flash",
@@ -414,6 +414,8 @@ $("#session-search").addEventListener("input", (e) => renderSessionList(e.target
 function openSessionContextMenu(e, session) {
   const items = [
     { id: "rename", name: "Rename", desc: "Edit conversation title" },
+    { id: "regen-title", name: "Regenerate title", desc: "Ask SSC AI for a fresh title", disabled: session.messages.length === 0 },
+    { id: "summarize", name: "Summarize conversation", desc: "AI-generated bullet summary", disabled: session.messages.length === 0 },
     { id: "pin", name: session.pinned ? "Unpin" : "Pin", desc: session.pinned ? "Remove from pinned" : "Keep at top of list" },
     { id: "export-txt", name: "Export as .txt", desc: "Plain text transcript" },
     { id: "export-md", name: "Export as .md", desc: "Markdown transcript" },
@@ -425,13 +427,17 @@ function openSessionContextMenu(e, session) {
   items.forEach((item) => {
     if (item.divider) { popover.appendChild(el("div", { class: "popover-divider" })); return; }
     popover.appendChild(
-      el("div", { class: "popover-item", onclick: () => { handleSessionAction(item.id, session); closePopover(); } },
+      el("div", {
+        class: "popover-item" + (item.disabled ? " disabled" : ""),
+        style: item.disabled ? "opacity:.4;pointer-events:none;" : "",
+        onclick: () => { handleSessionAction(item.id, session); closePopover(); },
+      },
         el("b", { style: item.id === "delete" ? "color:var(--danger)" : "" }, item.name),
         item.desc ? el("span", {}, item.desc) : null)
     );
   });
   popover.classList.add("show");
-  popover.style.top = Math.min(e.clientY, window.innerHeight - 220) + "px";
+  popover.style.top = Math.min(e.clientY, window.innerHeight - 260) + "px";
   popover.style.left = Math.min(e.clientX, window.innerWidth - 240) + "px";
   setTimeout(() => document.addEventListener("click", popoverCloseHandler = (ev) => { if (!popover.contains(ev.target)) closePopover(); }), 0);
 }
@@ -439,6 +445,14 @@ function handleSessionAction(action, session) {
   if (action === "rename") {
     const newTitle = prompt("Rename conversation:", session.title);
     if (newTitle && newTitle.trim()) { session.title = newTitle.trim(); session.titleAuto = false; persistSessions(); renderSessionList(); if (session.id === state.currentSessionId) $("#topbar-title").textContent = session.title; }
+  } else if (action === "regen-title") {
+    if (session.messages.length === 0) return;
+    session.titleAuto = true; // re-allow auto title to apply the result
+    toast("Regenerating title…");
+    generateSmartTitle(session);
+  } else if (action === "summarize") {
+    if (session.messages.length === 0) return;
+    summarizeSession(session);
   } else if (action === "pin") {
     session.pinned = !session.pinned; persistSessions(); renderSessionList();
   } else if (action === "export-txt" || action === "export-md") {
@@ -646,15 +660,25 @@ function buildMessageRow(m) {
   const avatar = el("div", { class: "avatar" + (isUser ? "" : " ai"), html: isUser ? userAvatarSvg() : aiAvatarSvg() });
 
   const bubble = el("div", { class: "bubble" });
-  bubble.innerHTML = renderMarkdownToHtml(m.content || "");
+  if (m.isErrorPlaceholder) {
+    bubble.appendChild(
+      el("div", { class: "error-placeholder" },
+        el("span", {}, "⚠ " + m.content),
+        el("button", { class: "btn", style: "margin-top:8px;", onclick: () => retryMessage(m) }, "Retry"))
+    );
+  } else {
+    bubble.innerHTML = renderMarkdownToHtml(m.content || "");
+  }
 
+  const PROVIDER_LABELS = { google: "Google", duckduckgo: "DDG" };
   const sourcesRow = (!isUser && m.sources && m.sources.length)
     ? el("div", { class: "sources-row" },
         el("span", { class: "sources-label" },
           el("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", html: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20z"/>' }),
           "Sources"),
-        ...m.sources.slice(0, 6).map((s) =>
+        ...m.sources.slice(0, 8).map((s) =>
           el("a", { class: "source-chip", href: s.uri, target: "_blank", rel: "noopener noreferrer", title: s.uri },
+            s.provider && PROVIDER_LABELS[s.provider] ? el("span", { class: "provider-badge" }, PROVIDER_LABELS[s.provider]) : null,
             (s.title || s.uri || "").slice(0, 40))))
     : null;
 
@@ -981,17 +1005,28 @@ function streamAssistantReply() {
           } else if (eventType === "sources") {
             aiMsg.sources = Array.isArray(data.sources) ? data.sources : [];
           } else if (eventType === "done") {
-            aiMsg.content = buffer;
             aiMsg.model = data.modelUsed;
-            state.analytics.requests++; state.analytics.tokens += approxTokens(buffer);
-            localStorage.setItem("ssc_analytics", JSON.stringify(state.analytics));
-            cacheSet(cacheKey, { text: buffer, model: data.modelUsed, sources: aiMsg.sources || [] });
+            if (buffer) {
+              aiMsg.content = buffer;
+              state.analytics.requests++; state.analytics.tokens += approxTokens(buffer);
+              localStorage.setItem("ssc_analytics", JSON.stringify(state.analytics));
+              cacheSet(cacheKey, { text: buffer, model: data.modelUsed, sources: aiMsg.sources || [] });
+            } else {
+              // Safety net: a successful call that still produced no visible
+              // text (rare now that the backend disables invisible Gemini
+              // "thinking" tokens and auto-retries across every key/model on
+              // empty output, but shown clearly rather than a blank bubble
+              // if it ever happens).
+              aiMsg.isErrorPlaceholder = true;
+              aiMsg.content = "SSC AI didn't return any visible text for this prompt. Try rephrasing, or retry.";
+            }
             finishGeneration(s, aiMsg, buffer);
           } else if (eventType === "error") {
             if (data.type === "quota" && typeof data.retryAfterSeconds === "number" && data.retryAfterSeconds > 0) {
               renderQuotaCountdown(aiMsg, data.retryAfterSeconds);
             } else {
-              bubble.innerHTML = `<span style="color:var(--danger)">⚠ ${escapeHtml(data.message || "Something went wrong.")}</span>`;
+              aiMsg.isErrorPlaceholder = true;
+              aiMsg.content = data.message || "Something went wrong.";
             }
             finishGeneration(s, aiMsg, buffer, true);
           } else if (eventType === "aborted") {
@@ -1000,11 +1035,15 @@ function streamAssistantReply() {
           }
         }
       }
-      if (!aiMsg.content) { aiMsg.content = buffer; finishGeneration(s, aiMsg, buffer); }
+      if (!aiMsg.content) { aiMsg.isErrorPlaceholder = true; aiMsg.content = "SSC AI didn't return any visible text for this prompt. Try rephrasing, or retry."; finishGeneration(s, aiMsg, buffer); }
     })
     .catch((err) => {
-      if (err.name === "AbortError") { aiMsg.content = buffer || "(stopped)"; }
-      else { bubble.innerHTML = `<span style="color:var(--danger)">⚠ Network/backend error: ${escapeHtml(err.message)}. Check your backend URL in Settings.</span>`; }
+      if (err.name === "AbortError") {
+        aiMsg.content = buffer || "(stopped)";
+      } else {
+        aiMsg.isErrorPlaceholder = true;
+        aiMsg.content = `Network/backend error: ${err.message}. Check your backend URL in Settings.`;
+      }
       finishGeneration(s, aiMsg, buffer, true);
     });
 }
@@ -1108,6 +1147,34 @@ async function generateSmartTitle(session) {
       if (state.currentSessionId === session.id) $("#topbar-title").textContent = title;
     }
   } catch { /* network unavailable — the instant fallback title set in sendMessage() remains */ }
+}
+
+async function summarizeSession(session) {
+  toast("Summarizing conversation…");
+  try {
+    const conversationText = session.messages.map((m) => `${m.role}: ${m.content}`).join("\n").slice(0, 20000);
+    const res = await fetch(state.backendUrl.replace(/\/$/, "") + "/api/summarize", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationText }),
+    });
+    if (!res.ok) throw new Error("Backend returned " + res.status);
+    const { summary } = await res.json();
+    showSummaryModal(session.title, summary || "SSC AI didn't return a summary for this conversation.");
+  } catch (err) {
+    toast("Couldn't summarize: " + err.message);
+  }
+}
+function showSummaryModal(title, summaryText) {
+  $("#confirm-body").innerHTML = "";
+  $("#confirm-body").appendChild(
+    el("div", { style: "text-align:left;" },
+      el("p", { style: "font-weight:600;color:var(--gold-bright);margin:0 0 10px;font-family:var(--font-brand);font-size:13px;" }, "Summary — " + title),
+      el("div", { style: "font-size:13px;line-height:1.6;color:var(--text);white-space:pre-wrap;max-height:40vh;overflow-y:auto;" }, summaryText))
+  );
+  const foot = $("#confirm-foot");
+  foot.innerHTML = "";
+  foot.appendChild(el("button", { class: "btn", onclick: () => { navigator.clipboard.writeText(summaryText); toast("Summary copied"); } }, "Copy"));
+  foot.appendChild(el("button", { class: "btn primary", onclick: () => closeModal("confirm-overlay") }, "Close"));
+  openModal("confirm-overlay");
 }
 
 /* ---------------------------------------------------------------------------
