@@ -1,5 +1,85 @@
 // src/gemini.js
-// Core AI engine: iterates the model fallback chain, and within each model
+// C// src/duckduckgo.js
+// Free, keyless supplement to Gemini's native Google Search grounding.
+//
+// DuckDuckGo's Instant Answer API (api.duckduckgo.com) requires no API key
+// and has no rate limit for reasonable personal use, but it only returns
+// "instant answer" style content (topic summaries, definitions, disambig
+// links) — not full web search results. We use it as a *hybrid* supplement:
+// when Web Search is on, we fire this alongside Gemini's own grounding tool
+// call and fold in whatever DuckDuckGo has, clearly labeled as its own
+// source so it's never confused with Gemini's grounding citations.
+
+const DDG_TIMEOUT_MS = 4000;
+const MAX_RELATED_TOPICS = 3;
+
+function cleanQueryForDDG(rawMessage) {
+  if (!rawMessage) return "";
+  return rawMessage
+    .replace(/\[FILE:[\s\S]*?\[\/FILE\]/gi, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+}
+
+/**
+ * Queries DuckDuckGo's Instant Answer API. Best-effort only: any failure
+ * (network, timeout, malformed response, or simply "no instant answer for
+ * this query" — which is common) resolves to an empty result rather than
+ * throwing, so it never blocks or breaks the main chat flow.
+ * Returns { snippet: string|null, sources: {title, uri}[] }.
+ */
+async function duckDuckGoInstantAnswer(rawMessage) {
+  const query = cleanQueryForDDG(rawMessage);
+  if (!query) return { snippet: null, sources: [] };
+
+  const url = new URL("https://api.duckduckgo.com/");
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("no_html", "1");
+  url.searchParams.set("skip_disambig", "1");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DDG_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url.toString(), { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return { snippet: null, sources: [] };
+
+    const data = await res.json();
+    const sources = [];
+    let snippet = null;
+
+    if (data.AbstractText) {
+      snippet = data.AbstractText;
+      if (data.AbstractURL) sources.push({ title: data.Heading || "DuckDuckGo", uri: data.AbstractURL });
+    }
+
+    if (Array.isArray(data.RelatedTopics)) {
+      for (const topic of data.RelatedTopics) {
+        if (sources.length >= MAX_RELATED_TOPICS) break;
+        if (topic?.FirstURL && topic?.Text) {
+          sources.push({ title: topic.Text.split(" - ")[0].slice(0, 80), uri: topic.FirstURL });
+        }
+      }
+    }
+
+    return { snippet, sources };
+  } catch (_) {
+    clearTimeout(timeout);
+    return { snippet: null, sources: [] }; // best-effort — never blocks the main chat flow
+  }
+}
+
+function formatDDGSnippetForPrompt(snippet) {
+  if (!snippet) return "";
+  return `\n\n[DUCKDUCKGO INSTANT ANSWER — supplementary context, verify against your own knowledge]\n${snippet}`;
+}
+
+module.exports = { duckDuckGoInstantAnswer, formatDDGSnippetForPrompt, cleanQueryForDDG };
+ore AI engine: iterates the model fallback chain, and within each model
 // iterates the key rotation, streaming tokens back through onChunk() until
 // one (key, model) pair succeeds or all are exhausted.
 //
@@ -32,9 +112,17 @@ function toGeminiContents(messages) {
 
 class AllProvidersExhaustedError extends Error {
   constructor(attempts) {
-    super("All Gemini models/keys are currently unavailable (quota exhausted).");
+    const anyQuota = attempts.some((a) => a.quota);
+    const anyEmpty = attempts.some((a) => a.emptyResponse);
+    const message = anyQuota
+      ? "All Gemini models/keys are currently unavailable (quota exhausted)."
+      : anyEmpty
+      ? "Gemini returned no visible text across every available model. This can happen on ambiguous or edge-case prompts — try rephrasing your message."
+      : "All Gemini models/keys are currently unavailable.";
+    super(message);
     this.name = "AllProvidersExhaustedError";
     this.attempts = attempts;
+    this.errorType = anyQuota ? "quota" : anyEmpty ? "empty" : "unknown";
     // Shortest retry-after hint among quota-exhausted attempts, if any were
     // provided by the API, so callers can show a real countdown instead of
     // a generic "try again shortly" message.
@@ -51,6 +139,19 @@ class AllProvidersExhaustedError extends Error {
 function buildGroundingTools(groundingEnabled) {
   if (!groundingEnabled) return undefined;
   return [{ googleSearch: {} }];
+}
+
+// Gemini 2.5 models default to spending part of maxOutputTokens on an
+// invisible internal "thinking" budget before producing visible text. Our
+// app already implements its own *visible* <thinking> mechanism via the
+// system prompt (see systemPrompt.js's deepThink instructions), so native
+// invisible thinking would silently compete for the same token budget —
+// and on some prompts can consume the entire budget, leaving zero visible
+// output even though the call "succeeded". We disable it explicitly so
+// every output token goes to text the user actually sees.
+function buildThinkingConfig(modelName) {
+  if (!/gemini-2\.5/.test(modelName)) return undefined; // only 2.5-series supports this param
+  return { thinkingBudget: 0 };
 }
 
 // Extracts a de-duplicated list of {title, uri} source citations from a
@@ -70,6 +171,16 @@ function extractGroundingSources(groundingChunks) {
     return [];
   }
 }
+
+// Human-readable explanations for Gemini finishReason values, used when a
+// response comes back with no visible text so the user gets a real
+// explanation instead of a silent empty bubble.
+const FINISH_REASON_MESSAGES = {
+  SAFETY: "The response was blocked by Gemini's safety filters.",
+  RECITATION: "The response was blocked due to potential copyrighted content overlap.",
+  MAX_TOKENS: "The response hit the max token limit before producing visible text.",
+  OTHER: "Gemini returned no visible text for this prompt.",
+};
 
 /**
  * Streams a chat completion, trying models in order and rotating keys within
@@ -107,6 +218,7 @@ async function streamChat({
       try {
         const client = getClient(apiKey);
         const tools = buildGroundingTools(groundingEnabled);
+        const thinkingConfig = buildThinkingConfig(modelName);
 
         const config = {
           systemInstruction: systemPrompt,
@@ -116,6 +228,7 @@ async function streamChat({
           httpOptions: { timeout: timeoutMs },
         };
         if (tools) config.tools = tools;
+        if (thinkingConfig) config.thinkingConfig = thinkingConfig;
 
         const stream = await client.models.generateContentStream({
           model: modelName,
@@ -124,6 +237,7 @@ async function streamChat({
         });
 
         let fullText = "";
+        let lastFinishReason = null;
         const groundingChunksAcc = [];
         for await (const chunk of stream) {
           if (signal?.aborted) break;
@@ -133,10 +247,12 @@ async function streamChat({
             emittedAnyThisAttempt = true;
             if (onChunk) onChunk(text);
           }
+          const candidate = chunk.candidates?.[0];
+          if (candidate?.finishReason) lastFinishReason = candidate.finishReason;
           // Grounding metadata streams in incrementally on whichever chunk(s)
           // carry it; accumulate across the whole response and de-dupe at
           // the end rather than assuming it's only on the final chunk.
-          const gm = chunk.candidates?.[0]?.groundingMetadata;
+          const gm = candidate?.groundingMetadata;
           if (gm?.groundingChunks?.length) groundingChunksAcc.push(...gm.groundingChunks);
         }
 
@@ -145,7 +261,19 @@ async function streamChat({
 
         const sources = tools ? extractGroundingSources(groundingChunksAcc) : [];
 
-        attempts.push({ model: modelName, key: apiKey.slice(-4), ok: true });
+        attempts.push({ model: modelName, key: apiKey.slice(-4), ok: true, finishReason: lastFinishReason });
+
+        // The call succeeded (no thrown error) but produced no visible text —
+        // this used to show as a silent empty bubble. Surface why, and let
+        // the caller decide whether to auto-retry with the next key/model.
+        if (!fullText) {
+          const reasonMsg = FINISH_REASON_MESSAGES[lastFinishReason] || FINISH_REASON_MESSAGES.OTHER;
+          const emptyErr = new Error(reasonMsg);
+          emptyErr.name = "EmptyResponseError";
+          emptyErr.finishReason = lastFinishReason;
+          throw emptyErr;
+        }
+
         return { fullText, modelUsed: modelName, keySuffixUsed: apiKey.slice(-4), attempts, sources };
       } catch (err) {
         clearTimeout(timeout);
@@ -155,6 +283,19 @@ async function streamChat({
           const abortErr = new Error("Generation aborted by user.");
           abortErr.name = "AbortError";
           throw abortErr;
+        }
+
+        if (err.name === "EmptyResponseError") {
+          attempts[attempts.length - 1] = {
+            ...attempts[attempts.length - 1],
+            ok: false,
+            emptyResponse: true,
+            message: err.message,
+          };
+          // Try the next key for this model first (cheap), then fall through
+          // to the next model in the chain if every key on this model comes
+          // back empty — a different model may simply answer the prompt.
+          continue;
         }
 
         const quota = isQuotaError(err);
