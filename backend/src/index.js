@@ -13,6 +13,7 @@ const rateLimit = require("express-rate-limit");
 const { KeyManager } = require("./keyManager");
 const { streamChat, AllProvidersExhaustedError } = require("./gemini");
 const { buildSystemPrompt, getLiveClockBlock } = require("./systemPrompt");
+const { duckDuckGoInstantAnswer, formatDDGSnippetForPrompt } = require("./duckduckgo");
 
 const PORT = process.env.PORT || 3000;
 const TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 30000);
@@ -163,11 +164,32 @@ app.post("/api/chat", async (req, res) => {
 
     if (webSearchEnabled) send("status", { stage: "grounding" });
 
+    // Hybrid web search: Gemini's own native Google Search grounding tool
+    // (handled inside streamChat via groundingEnabled) runs alongside a
+    // free, keyless DuckDuckGo Instant Answer lookup. DDG frequently has no
+    // instant answer for a given query — that's normal and handled
+    // gracefully; when it does, its snippet is folded into the prompt as
+    // extra context and its source(s) are tagged separately in the UI.
+    let augmentedMessages = messages;
+    let ddgSources = [];
+    if (webSearchEnabled) {
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+      if (lastUserMsg) {
+        const ddg = await duckDuckGoInstantAnswer(lastUserMsg.content);
+        if (ddg.snippet) {
+          augmentedMessages = messages.map((m) =>
+            m === lastUserMsg ? { ...m, content: m.content + formatDDGSnippetForPrompt(ddg.snippet) } : m
+          );
+        }
+        ddgSources = ddg.sources.map((s) => ({ ...s, provider: "duckduckgo" }));
+      }
+    }
+
     const { modelUsed, keySuffixUsed, sources } = await streamChat({
       keyManager,
       modelChain,
       systemPrompt,
-      messages,
+      messages: augmentedMessages,
       temperature,
       maxOutputTokens: maxTokens,
       groundingEnabled: webSearchEnabled,
@@ -177,7 +199,17 @@ app.post("/api/chat", async (req, res) => {
       onRetry: () => send("reset", { reason: "Switching to a fallback model/key — restarting response." }),
     });
 
-    if (sources && sources.length) send("sources", { sources });
+    // Merge Gemini's native grounding sources (tagged "google") with any
+    // DuckDuckGo instant-answer sources, de-duplicated by URL.
+    const taggedGeminiSources = (sources || []).map((s) => ({ ...s, provider: "google" }));
+    const seenUris = new Set();
+    const mergedSources = [...taggedGeminiSources, ...ddgSources].filter((s) => {
+      if (seenUris.has(s.uri)) return false;
+      seenUris.add(s.uri);
+      return true;
+    });
+
+    if (mergedSources.length) send("sources", { sources: mergedSources });
     send("done", { modelUsed, keySuffixUsed });
     safeEnd();
   } catch (err) {
@@ -187,9 +219,8 @@ app.post("/api/chat", async (req, res) => {
     }
     if (err instanceof AllProvidersExhaustedError) {
       send("error", {
-        type: "quota",
-        message:
-          "All configured Gemini keys/models are temporarily rate-limited. Please try again shortly.",
+        type: err.errorType, // "quota" | "empty" | "unknown"
+        message: err.message,
         attempts: err.attempts,
         retryAfterSeconds: err.suggestedRetrySeconds,
       });
@@ -244,7 +275,7 @@ app.post("/api/title", async (req, res) => {
       systemPrompt:
         "Generate a short, specific chat title (max 6 words, no quotes, no punctuation at the end) summarizing this conversation's topic. Output ONLY the title text.",
       userText: conversationText.slice(0, 4000),
-      maxTokens: 20,
+      maxTokens: 40,
     });
     res.json({ title: title.replace(/^["']|["']$/g, "") });
   } catch (err) {
