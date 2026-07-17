@@ -1,5 +1,5 @@
 {
-  "name": "ssc-ai-backend",
+  "name": "ssc-ai",
   "version": "1.0.0",
   "description": "Synergy Science Circle AI - Backend (Gemini multi-key streaming API)",
   "main": "src/index.js",
