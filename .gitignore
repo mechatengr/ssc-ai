@@ -1,0 +1,15 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Capacitor generated native project (rebuilt fresh by GitHub Actions every run)
+android/
+ios/
+
+# Env / secrets — NEVER commit real keys
+.env
+backend/.env
+
+# OS / editor junk
+.DS_Store
+*.log
