@@ -67,7 +67,7 @@ function buildSystemPrompt({
     : "";
 
   const searchLine = webSearchEnabled
-    ? `Live Google Search grounding is enabled for this response. Use it whenever the question involves current events, prices, schedules, or any fact that could have changed recently, and ground your claims in what you find rather than relying on memory alone. Do not fabricate sources.`
+    ? `Live web grounding is enabled for this response, combining Gemini's built-in Google Search tool with a supplementary DuckDuckGo instant-answer snippet when one is available (marked as such below your conversation if present). Use these whenever the question involves current events, prices, schedules, or any fact that could have changed recently, and ground your claims in what you find rather than relying on memory alone. Do not fabricate sources.`
     : "";
 
   const overrideBlock = systemPromptOverride
