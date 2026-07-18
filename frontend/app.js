@@ -9,6 +9,10 @@
    0. CONFIG + STATE
 --------------------------------------------------------------------------- */
 const DEFAULTS = {
+  // Pre-configured so the app works with zero setup. If you deploy your own
+  // backend (see backend/README.md), change this to your own Render URL —
+  // or just paste it once into Settings → General → Backend URL, which is
+  // saved locally and always takes priority over this default.
   backendUrl: localStorage.getItem("ssc_backend_url") || "https://ssc-ai.onrender.com",
   theme: localStorage.getItem("ssc_theme") || "dark",
   persona: "researcher",
@@ -91,6 +95,20 @@ function toast(msg, type = "info") {
   const t = el("div", { class: "toast" }, msg);
   host.appendChild(t);
   setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; setTimeout(() => t.remove(), 300); }, 2600);
+}
+
+// Shared clipboard helper: some WebView/browser contexts restrict clipboard
+// access, in which case navigator.clipboard.writeText rejects. Handle that
+// gracefully with a clear toast instead of a silent/uncaught rejection.
+function copyToClipboard(text, successMessage = "Copied to clipboard") {
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    toast("Clipboard isn't available in this browser");
+    return;
+  }
+  navigator.clipboard.writeText(text).then(
+    () => toast(successMessage),
+    () => toast("Couldn't copy — clipboard access was blocked")
+  );
 }
 
 /* ---------------------------------------------------------------------------
@@ -532,7 +550,7 @@ function enhanceCodeBlocks(container) {
       "div", { class: "codeblock-head", onclick: (e) => { if (e.target.tagName !== "BUTTON") wrap.classList.toggle("collapsed"); } },
       el("span", {}, lang),
       el("div", { class: "cb-actions" },
-        el("button", { onclick: (e) => { e.stopPropagation(); navigator.clipboard.writeText(block.textContent); toast("Code copied"); } }, "Copy"),
+        el("button", { onclick: (e) => { e.stopPropagation(); copyToClipboard(block.textContent, "Code copied"); } }, "Copy"),
         el("button", { onclick: (e) => { e.stopPropagation(); wrap.classList.toggle("collapsed"); } }, "Toggle"))
     );
     pre.parentNode.insertBefore(wrap, pre);
@@ -672,14 +690,21 @@ function buildMessageRow(m) {
 
   const PROVIDER_LABELS = { google: "Google", duckduckgo: "DDG" };
   const sourcesRow = (!isUser && m.sources && m.sources.length)
-    ? el("div", { class: "sources-row" },
-        el("span", { class: "sources-label" },
+    ? (() => {
+        const chipsWrap = el("div", { class: "sources-chips" },
+          ...m.sources.slice(0, 8).map((s) =>
+            el("a", { class: "source-chip", href: s.uri, target: "_blank", rel: "noopener noreferrer", title: s.uri },
+              s.provider && PROVIDER_LABELS[s.provider] ? el("span", { class: "provider-badge" }, PROVIDER_LABELS[s.provider]) : null,
+              (s.title || s.uri || "").slice(0, 40))));
+        const wrap = el("div", { class: "sources-row" });
+        const toggle = el("button", { class: "sources-toggle", onclick: () => wrap.classList.toggle("expanded") },
+          el("svg", { class: "chev", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "3", html: '<path d="M6 9l6 6 6-6"/>' }),
           el("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", html: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20z"/>' }),
-          "Sources"),
-        ...m.sources.slice(0, 8).map((s) =>
-          el("a", { class: "source-chip", href: s.uri, target: "_blank", rel: "noopener noreferrer", title: s.uri },
-            s.provider && PROVIDER_LABELS[s.provider] ? el("span", { class: "provider-badge" }, PROVIDER_LABELS[s.provider]) : null,
-            (s.title || s.uri || "").slice(0, 40))))
+          `Sources (${m.sources.length})`);
+        wrap.appendChild(toggle);
+        wrap.appendChild(chipsWrap);
+        return wrap;
+      })()
     : null;
 
   const meta = el("div", { class: "msg-meta" },
@@ -688,7 +713,7 @@ function buildMessageRow(m) {
   );
 
   const actions = el("div", { class: "msg-actions" });
-  actions.appendChild(iconActionBtn("copy", () => { navigator.clipboard.writeText(m.content); toast("Copied to clipboard"); }));
+  actions.appendChild(iconActionBtn("copy", () => copyToClipboard(m.content)));
   if (isUser) {
     actions.appendChild(iconActionBtn("edit", () => beginEditMessage(m, bubble)));
   } else {
@@ -1172,7 +1197,7 @@ function showSummaryModal(title, summaryText) {
   );
   const foot = $("#confirm-foot");
   foot.innerHTML = "";
-  foot.appendChild(el("button", { class: "btn", onclick: () => { navigator.clipboard.writeText(summaryText); toast("Summary copied"); } }, "Copy"));
+  foot.appendChild(el("button", { class: "btn", onclick: () => copyToClipboard(summaryText, "Summary copied") }, "Copy"));
   foot.appendChild(el("button", { class: "btn primary", onclick: () => closeModal("confirm-overlay") }, "Close"));
   openModal("confirm-overlay");
 }
