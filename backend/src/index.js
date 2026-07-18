@@ -69,12 +69,18 @@ app.use(
 
 // ---- Health / status ----------------------------------------------------
 app.get("/api/health", (req, res) => {
+  const keys = keyManager.status();
+  // Don't expose key suffixes by default in public health responses.
+  // Set EXPOSE_KEY_SUFFIXES=1 in your environment ONLY for trusted/local use.
+  const showKeySuffixes = process.env.EXPOSE_KEY_SUFFIXES === "1";
   res.json({
     status: "ok",
     service: "SSC AI Backend",
     time: getLiveClockBlock(),
     models: MODEL_CHAIN,
-    keys: keyManager.status(),
+    keys: showKeySuffixes
+      ? keys
+      : keys.map((k) => ({ index: k.index, onCooldown: k.onCooldown })),
   });
 });
 
