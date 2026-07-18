@@ -227,16 +227,12 @@ button{ font-family:inherit; }
 .thinking-block summary{ cursor:pointer; color:var(--gold); font-weight:600; }
 
 .msg-meta{ display:flex; gap:10px; align-items:center; font-size:10.6px; color:var(--text-dim); padding:0 4px; }
-.msg-actions{ display:flex; gap:4px; transition:.2s; }
-/* Only hide-until-hover on devices that actually support hover with a
-   precise pointer (mouse/trackpad). Touchscreens (Android, iOS, tablets)
-   have no hover state, so hiding these behind :hover made them invisible
-   and untappable there — they stay visible by default and only get the
-   hover-reveal treatment on desktop. */
-@media (hover: hover) and (pointer: fine) {
-  .msg-actions{ opacity:0; }
-  .msg-row:hover .msg-actions{ opacity:1; }
-}
+/* Always visible on every device — some Android WebViews unreliably report
+   hover support even on touch-only screens, so gating visibility on a
+   hover/pointer media query is not dependable across all browsers/WebViews.
+   Hover (where it genuinely exists, e.g. desktop mouse) only adds a subtle
+   highlight below, never controls whether these are shown at all. */
+.msg-actions{ display:flex; gap:4px; }
 .msg-actions button{
   width:26px; height:26px; border-radius:8px; border:none; background:transparent; color:var(--text-dim);
   cursor:pointer; display:flex; align-items:center; justify-content:center; transition:.15s;
@@ -393,10 +389,21 @@ button, .composer-btn, .icon-btn, .toggle-chip, .dd-trigger, .suggest-chip, .ses
 #chat-scroll::-webkit-scrollbar-thumb, #session-list::-webkit-scrollbar-thumb{ background:rgba(217,179,77,.25); border-radius:8px; }
 #chat-scroll::-webkit-scrollbar-thumb:hover{ background:rgba(217,179,77,.45); }
 
-/* Source citation chips (grounded answers) */
-.sources-row{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:-4px 0 2px; }
-.sources-label{ display:flex; align-items:center; gap:4px; font-size:10.5px; color:var(--text-dim); font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.04em; margin-right:2px; }
-.sources-label svg{ width:11px; height:11px; }
+/* Source citation chips (grounded answers) — collapsible */
+.sources-row{ margin:-4px 0 2px; }
+.sources-toggle{
+  display:flex; align-items:center; gap:5px; font-size:10.5px; color:var(--text-dim); font-family:var(--font-mono);
+  text-transform:uppercase; letter-spacing:.04em; background:none; border:none; cursor:pointer; padding:4px 2px;
+}
+.sources-toggle:hover{ color:var(--gold-bright); }
+.sources-toggle svg{ width:11px; height:11px; flex-shrink:0; }
+.sources-toggle .chev{ transition:transform .18s ease; }
+.sources-row.expanded .sources-toggle .chev{ transform:rotate(180deg); }
+.sources-chips{
+  display:flex; flex-wrap:wrap; align-items:center; gap:6px; max-height:0; overflow:hidden; opacity:0;
+  transition:max-height .22s ease, opacity .18s ease, margin .18s ease;
+}
+.sources-row.expanded .sources-chips{ max-height:400px; opacity:1; margin-top:4px; }
 .source-chip{
   display:inline-flex; align-items:center; padding:5px 10px; border-radius:999px; border:1px solid var(--border);
   background:var(--panel-2); color:var(--gold-bright); font-size:11px; text-decoration:none; white-space:nowrap;
