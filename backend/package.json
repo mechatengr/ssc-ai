@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.15.0",
-    "@groq/groq-sdk": "^0.1.0",
+    "groq-sdk": "^0.5.0",          // <-- corrected package name
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
