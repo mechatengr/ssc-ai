@@ -2,7 +2,7 @@
 // Groq API integration – uses the official Groq SDK.
 // Supports multiple API keys, rotation, and streaming.
 
-const Groq = require('@groq/groq-sdk');
+const Groq = require('groq-sdk');   // <-- corrected require
 const { isQuotaError, extractRetryAfterSeconds } = require('./quota');
 
 const clientCache = new Map(); // apiKey -> Groq instance
