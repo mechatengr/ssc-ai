@@ -330,7 +330,7 @@ app.post("/api/suggestions", async (req, res) => {
     });
     let suggestions = [];
     try {
-      suggestions = JSON.parse(raw.match(/\[[\s\S]*\]/?.[0] || "[]");
+      suggestions = JSON.parse(raw.match(/\[[\s\S]*\]/)?.[0] || "[]");
     } catch (_) {
       suggestions = [];
     }
