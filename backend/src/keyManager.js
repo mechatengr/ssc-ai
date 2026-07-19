@@ -24,7 +24,12 @@ class KeyManager {
 
   markExhausted(key, retryAfterSeconds) {
     const cooldownMs = (retryAfterSeconds ? retryAfterSeconds : 60) * 1000;
-    this.cooldowns.set(key, Date.now() + cooldownMs);
+    const until = Date.now() + cooldownMs;
+    // Only update if the new cooldown extends beyond the current one
+    const current = this.cooldowns.get(key);
+    if (!current || until > current) {
+      this.cooldowns.set(key, until);
+    }
   }
 
   // Returns an ordered list of keys to try this request, starting from the

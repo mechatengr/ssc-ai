@@ -104,6 +104,16 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "messages[] is required" });
   }
 
+  // Validate message count and total size to prevent resource exhaustion
+  if (messages.length > 500) {
+    return res.status(400).json({ error: "messages[] exceeds 500 messages limit" });
+  }
+
+  const totalChars = messages.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  if (totalChars > 500000) {
+    return res.status(413).json({ error: "Total message content exceeds 500k characters" });
+  }
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -154,7 +164,7 @@ app.post("/api/chat", async (req, res) => {
           modelChain,
           systemPrompt:
             systemPrompt +
-            "\n\nThis is PASS 1 of 2 (internal). Produce only a condensed, bullet-point analysis of the problem: key facts, approach, and potential pitfalls. Do not answer the user yet. Max 150 words.",
+            "\n\nThis is PASS 1 of 2 (internal). Produce only a condensed, bullet-point analysis of the problem: key facts, approach, and potential pitfalls. Do not answer the user yet. Maximum 150 words.",
           messages,
           temperature: Math.min(temperature, 0.6),
           maxOutputTokens: 400,
@@ -164,6 +174,7 @@ app.post("/api/chat", async (req, res) => {
         systemPrompt += `\n\n[INTERNAL PASS-1 ANALYSIS - use this to inform your final answer, do not repeat it verbatim]\n${pass1.fullText}`;
       } catch (e) {
         // If pass 1 fails, just proceed straight to the normal single pass.
+        console.error("Mastermind pass 1 failed:", e.message);
       }
       send("status", { stage: "mastermind-pass-2" });
     }
@@ -224,15 +235,29 @@ app.post("/api/chat", async (req, res) => {
       return safeEnd();
     }
     if (err instanceof AllProvidersExhaustedError) {
+      // Redact sensitive error details from client response
       send("error", {
         type: err.errorType, // "quota" | "empty" | "unknown"
         message: err.message,
-        attempts: err.attempts,
+        attempts: err.attempts.map(a => ({
+          model: a.model,
+          key: a.key,
+          ok: a.ok,
+          quota: a.quota,
+          retryAfterSeconds: a.retryAfterSeconds,
+          // Omit full error messages to prevent information leakage
+        })),
         retryAfterSeconds: err.suggestedRetrySeconds,
       });
       return safeEnd();
     }
-    send("error", { type: "unknown", message: err.message });
+    
+    // Log full error server-side but send generic message to client
+    console.error("Chat endpoint error:", err.message, err.stack);
+    send("error", { 
+      type: "unknown", 
+      message: "An error occurred while generating your response. Please try again." 
+    });
     safeEnd();
   }
 });
@@ -267,7 +292,8 @@ app.post("/api/summarize", async (req, res) => {
     });
     res.json({ summary });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Summarize error:", err.message);
+    res.status(500).json({ error: "Failed to generate summary. Please try again." });
   }
 });
 
@@ -285,7 +311,8 @@ app.post("/api/title", async (req, res) => {
     });
     res.json({ title: title.replace(/^["']|["']$/g, "") });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Title error:", err.message);
+    res.status(500).json({ error: "Failed to generate title. Please try again." });
   }
 });
 
@@ -303,19 +330,21 @@ app.post("/api/suggestions", async (req, res) => {
     });
     let suggestions = [];
     try {
-      suggestions = JSON.parse(raw.match(/\[[\s\S]*\]/)?.[0] || "[]");
+      suggestions = JSON.parse(raw.match(/\[[\s\S]*\]/?.[0] || "[]");
     } catch (_) {
       suggestions = [];
     }
     res.json({ suggestions });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Suggestions error:", err.message);
+    res.status(500).json({ error: "Failed to generate suggestions. Please try again." });
   }
 });
 
 // ---- Global error handler (e.g. malformed JSON body, oversized payload) --
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
+  console.error("Unhandled error:", err.message);
   const status = err.status || err.statusCode || 500;
   res.status(status).json({ error: err.message || "Unexpected server error" });
 });

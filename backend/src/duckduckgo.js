@@ -59,7 +59,8 @@ async function duckDuckGoInstantAnswer(rawMessage) {
     if (Array.isArray(data.RelatedTopics)) {
       for (const topic of data.RelatedTopics) {
         if (sources.length >= MAX_RELATED_TOPICS) break;
-        if (topic?.FirstURL && topic?.Text) {
+        // Add type validation to prevent crashes on malformed data
+        if (topic?.FirstURL && topic?.Text && typeof topic.Text === 'string') {
           sources.push({ title: topic.Text.split(" - ")[0].slice(0, 80), uri: topic.FirstURL });
         }
       }
