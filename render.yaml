@@ -1,23 +1,67 @@
+# ================================================================
+# Render Deployment Configuration – SSC AI Backend
+# ================================================================
+# Deploy the backend as a standalone web service on Render.
+# The frontend (static site) can be deployed separately via Render's
+# Static Site or served from a CDN.
+#
+# Place this file in the root of your repository.
+# The backend source code is expected in the "backend/" folder.
+# ================================================================
+
 services:
   - type: web
-    name: ssc-ai-backend
+    name: ssc-ai
     runtime: node
-    plan: free
-    region: oregon
-    rootDir: backend
+    plan: free                 # Free tier is fine for personal use
+    region: oregon             # Choose the region closest to your users
+    rootDir: backend           # The backend code is inside the "backend" folder
+
+    # Build & start commands
     buildCommand: npm install
     startCommand: npm start
+
+    # Health check – ensures Render keeps the service alive
     healthCheckPath: /api/health
+
+    # Environment variables
     envVars:
+      # ---- Gemini API Keys ----
+      # Multiple keys can be comma-separated for rotation.
+      # Set these as "secret" environment variables in the Render dashboard
+      # (never commit them to version control).
       - key: GEMINI_API_KEYS
-        sync: false          # set this manually in the Render dashboard — never commit real keys
+        sync: false
+
+      # ---- Gemini Model Chain ----
+      # Models tried in order when a key/model fails.
       - key: GEMINI_MODELS
         value: gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-1.5-flash
+
+      # ---- Groq API Keys ----
+      # One or more Groq API keys (comma-separated).
       - key: GROQ_API_KEYS
-        sync: false          # set this manually as well
+        sync: false
+
+      # ---- Groq Model Chain ----
+      # Models tried in order for Groq.
       - key: GROQ_MODELS
         value: llama-3.1-70b-versatile,llama-3.1-8b-instant,mixtral-8x7b-32768,gemma2-9b-it
+
+      # ---- CORS ----
+      # Allowed origins. Use "*" for development, but restrict in production.
       - key: ALLOWED_ORIGINS
         value: "*"
+
+      # ---- Node.js Version ----
       - key: NODE_VERSION
         value: "20"
+
+      # ---- Port ----
+      # Render injects its own PORT variable, so this is optional.
+      - key: PORT
+        value: 3000
+
+      # ---- Timeout (in ms) ----
+      - key: REQUEST_TIMEOUT_MS
+        value: 30000
