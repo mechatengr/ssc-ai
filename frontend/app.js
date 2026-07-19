@@ -9,14 +9,11 @@
    0. CONFIG + STATE
 --------------------------------------------------------------------------- */
 const DEFAULTS = {
-  // Pre-configured so the app works with zero setup. If you deploy your own
-  // backend (see backend/README.md), change this to your own Render URL —
-  // or just paste it once into Settings → General → Backend URL, which is
-  // saved locally and always takes priority over this default.
-  backendUrl: localStorage.getItem("ssc_backend_url") || "https://ssc-ai.onrender.com",
+  backendUrl: localStorage.getItem("ssc_backend_url") || "https://YOUR-BACKEND-URL.onrender.com",
   theme: localStorage.getItem("ssc_theme") || "dark",
   persona: "researcher",
-  model: "gemini-2.5-flash",
+  // Default model changed to Groq Llama 3.1 70B
+  model: "llama-3.1-70b-versatile",
   language: "en",
 };
 
@@ -30,10 +27,16 @@ const PERSONAS = [
 ];
 
 const MODELS = [
-  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", short: "Flash", desc: "Fast, balanced default" },
-  { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite", short: "Flash Lite", desc: "Lightweight & quick" },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", short: "2.0 Flash", desc: "Prior generation, reliable" },
-  { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash", short: "1.5 Flash", desc: "Fallback model" },
+  // Gemini
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", short: "Flash", desc: "Fast, balanced default", provider: "gemini" },
+  { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite", short: "Flash Lite", desc: "Lightweight & quick", provider: "gemini" },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", short: "2.0 Flash", desc: "Prior generation, reliable", provider: "gemini" },
+  { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash", short: "1.5 Flash", desc: "Fallback model", provider: "gemini" },
+  // Groq
+  { id: "llama-3.1-70b-versatile", name: "Groq Llama 3.1 70B", short: "Llama 70B", desc: "High‑performance open‑source", provider: "groq" },
+  { id: "llama-3.1-8b-instant", name: "Groq Llama 3.1 8B", short: "Llama 8B", desc: "Fast & efficient", provider: "groq" },
+  { id: "mixtral-8x7b-32768", name: "Groq Mixtral 8x7B", short: "Mixtral", desc: "Large context, strong reasoning", provider: "groq" },
+  { id: "gemma2-9b-it", name: "Groq Gemma 2 9B", short: "Gemma 2", desc: "Google’s open model", provider: "groq" },
 ];
 
 const LANGUAGES = [
@@ -66,6 +69,7 @@ const state = {
   analytics: JSON.parse(localStorage.getItem("ssc_analytics") || '{"requests":0,"tokens":0}'),
   cache: new Map(),      // prompt-hash -> {text, ts}
   attachedFiles: [],     // files staged for the next send
+  quotaIntervals: new Map(), // messageId -> intervalId for countdown timers
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -73,7 +77,7 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const el = (tag, attrs = {}, ...children) => {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
-    if (v == null) continue; // skip null/undefined so conditional attrs (selected, checked...) aren't stringified to "null"
+    if (v == null) continue;
     if (k === "class") node.className = v;
     else if (k === "html") node.innerHTML = v;
     else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
@@ -97,20 +101,6 @@ function toast(msg, type = "info") {
   setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; setTimeout(() => t.remove(), 300); }, 2600);
 }
 
-// Shared clipboard helper: some WebView/browser contexts restrict clipboard
-// access, in which case navigator.clipboard.writeText rejects. Handle that
-// gracefully with a clear toast instead of a silent/uncaught rejection.
-function copyToClipboard(text, successMessage = "Copied to clipboard") {
-  if (!navigator.clipboard || !navigator.clipboard.writeText) {
-    toast("Clipboard isn't available in this browser");
-    return;
-  }
-  navigator.clipboard.writeText(text).then(
-    () => toast(successMessage),
-    () => toast("Couldn't copy — clipboard access was blocked")
-  );
-}
-
 /* ---------------------------------------------------------------------------
    1. THEME
 --------------------------------------------------------------------------- */
@@ -127,7 +117,7 @@ function applyTheme(theme) {
 $("#theme-toggle").addEventListener("click", () => applyTheme(state.theme === "dark" ? "light" : "dark"));
 
 /* ---------------------------------------------------------------------------
-   2. PARTICLE BACKGROUND (subtle gold/silver drift, matches crest atom motif)
+   2. PARTICLE BACKGROUND
 --------------------------------------------------------------------------- */
 (function particles() {
   const canvas = $("#particles");
@@ -169,21 +159,15 @@ $("#theme-toggle").addEventListener("click", () => applyTheme(state.theme === "d
 
 /* ---------------------------------------------------------------------------
    3. STORAGE — sessions, backed by IndexedDB
-   IndexedDB comfortably holds tens of MB (vs. localStorage's ~5-10MB cap),
-   which matters once conversations include pasted file content. state.sessions
-   stays as the in-memory source of truth (so the rest of the app can keep
-   reading/writing it synchronously); persistSessions() writes through to
-   IndexedDB asynchronously in the background. A one-time migration pulls in
-   any sessions saved by older versions of SSC AI that used localStorage.
 --------------------------------------------------------------------------- */
-const SESSIONS_KEY = "ssc_sessions_v1"; // legacy localStorage key, used for migration only
+const SESSIONS_KEY = "ssc_sessions_v1";
 const MAX_SESSIONS = 30;
 const IDB_NAME = "ssc_ai_db";
 const IDB_VERSION = 1;
 const IDB_STORE = "sessions";
 const IDB_RECORD_KEY = "all_sessions";
 
-let idbHandle = null; // cached open IDBDatabase, or null if unavailable
+let idbHandle = null;
 function openIdb() {
   return new Promise((resolve) => {
     if (idbHandle) return resolve(idbHandle);
@@ -195,7 +179,7 @@ function openIdb() {
         if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
       };
       req.onsuccess = () => { idbHandle = req.result; resolve(idbHandle); };
-      req.onerror = () => resolve(null); // IndexedDB unavailable (e.g. private browsing) — caller falls back
+      req.onerror = () => resolve(null);
     } catch { resolve(null); }
   });
 }
@@ -231,19 +215,17 @@ async function loadSessions() {
       state.sessions = fromIdb;
       return;
     }
-    // Nothing in IndexedDB yet — migrate any legacy localStorage data once.
     const legacy = JSON.parse(localStorage.getItem(SESSIONS_KEY) || "[]");
     state.sessions = Array.isArray(legacy) ? legacy : [];
     if (state.sessions.length) {
       await idbSet(IDB_RECORD_KEY, state.sessions);
-      localStorage.removeItem(SESSIONS_KEY); // migration complete, free the space
+      localStorage.removeItem(SESSIONS_KEY);
     }
   } catch {
     state.sessions = [];
   }
 }
 function persistSessions() {
-  // Keep newest 30 (pinned always kept, oldest unpinned dropped first)
   let sessions = [...state.sessions];
   if (sessions.length > MAX_SESSIONS) {
     const pinned = sessions.filter((s) => s.pinned);
@@ -251,13 +233,9 @@ function persistSessions() {
     sessions = [...pinned, ...unpinned].slice(0, MAX_SESSIONS);
     state.sessions = sessions;
   }
-  // Fire-and-forget async write; state.sessions (in-memory) is already the
-  // source of truth for everything the UI reads synchronously.
   idbSet(IDB_RECORD_KEY, sessions).then((ok) => {
     if (!ok) {
-      // IndexedDB unavailable — fall back to localStorage so history still
-      // survives a reload, within its smaller size limit.
-      try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* storage full/unavailable */ }
+      try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* ignore */ }
     }
   });
 }
@@ -278,9 +256,6 @@ function createSession() {
   persistSessions();
   return s;
 }
-// Applies a session's saved settings snapshot to the active/global state and
-// refreshes the top bar to reflect it. Falls back gracefully for sessions
-// created before this feature existed (no `settings` field yet).
 function applySessionSettings(session) {
   if (!session) return;
   const defaults = { persona: state.persona, model: state.model, language: state.language, webSearch: state.webSearch, deepThink: state.deepThink, mastermind: state.mastermind };
@@ -308,12 +283,13 @@ function saveCurrentSession() {
 }
 
 /* ---------------------------------------------------------------------------
-   4. POPOVER (generic dropdown) + MODAL + CONFIRM system
+   4. POPOVER + MODAL + CONFIRM
 --------------------------------------------------------------------------- */
 const popover = $("#popover");
 let popoverCloseHandler = null;
 
 function openPopover(anchorEl, items, { selectedId, onSelect, width } = {}) {
+  closePopover(); // clean up any previous popover
   popover.innerHTML = "";
   if (width) popover.style.minWidth = width;
   items.forEach((item) => {
@@ -369,7 +345,7 @@ function confirmDialog({ title, message, confirmLabel = "Delete", danger = true,
 }
 
 /* ---------------------------------------------------------------------------
-   5. TOP BAR DROPDOWNS: persona / model, and toggle chips
+   5. TOP BAR DROPDOWNS
 --------------------------------------------------------------------------- */
 function refreshTopbarLabels() {
   $("#persona-label").textContent = PERSONAS.find((p) => p.id === state.persona)?.name || "Persona";
@@ -396,7 +372,7 @@ $("#deepthink-toggle").addEventListener("click", () => { state.deepThink = !stat
 $("#mastermind-toggle").addEventListener("click", () => { state.mastermind = !state.mastermind; localStorage.setItem("ssc_mastermind", state.mastermind ? "1" : "0"); refreshTopbarLabels(); syncCurrentSessionSettings(); });
 
 /* ---------------------------------------------------------------------------
-   6. SIDEBAR — session list rendering
+   6. SIDEBAR
 --------------------------------------------------------------------------- */
 function renderSessionList(filter = "") {
   const list = $("#session-list");
@@ -440,7 +416,6 @@ function openSessionContextMenu(e, session) {
     { divider: true },
     { id: "delete", name: "Delete conversation", desc: "This cannot be undone" },
   ];
-  const fakeAnchor = document.body;
   popover.innerHTML = "";
   items.forEach((item) => {
     if (item.divider) { popover.appendChild(el("div", { class: "popover-divider" })); return; }
@@ -465,7 +440,7 @@ function handleSessionAction(action, session) {
     if (newTitle && newTitle.trim()) { session.title = newTitle.trim(); session.titleAuto = false; persistSessions(); renderSessionList(); if (session.id === state.currentSessionId) $("#topbar-title").textContent = session.title; }
   } else if (action === "regen-title") {
     if (session.messages.length === 0) return;
-    session.titleAuto = true; // re-allow auto title to apply the result
+    session.titleAuto = true;
     toast("Regenerating title…");
     generateSmartTitle(session);
   } else if (action === "summarize") {
@@ -507,12 +482,11 @@ $("#menu-toggle").addEventListener("click", openSidebar);
 $("#sidebar-scrim").addEventListener("click", closeSidebar);
 
 /* ---------------------------------------------------------------------------
-   7. MESSAGE RENDERING — markdown, code, math, thinking blocks, tables
+   7. MESSAGE RENDERING
 --------------------------------------------------------------------------- */
 marked.setOptions({ breaks: true, gfm: true });
 
 function renderMarkdownToHtml(raw) {
-  // Pull out <thinking>...</thinking> blocks before markdown parsing
   let thinkingHtml = "";
   let text = raw.replace(/<thinking>([\s\S]*?)<\/thinking>/gi, (_, inner) => {
     if (state.showThinking) {
@@ -521,10 +495,10 @@ function renderMarkdownToHtml(raw) {
     return "";
   });
 
-  // Protect math segments from markdown/HTML mangling using placeholders
+  // Use a more unique placeholder for math
   const mathStore = [];
-  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => { mathStore.push({ tex: m, display: true }); return `@@MATH${mathStore.length - 1}@@`; });
-  text = text.replace(/\$([^\n$]+?)\$/g, (_, m) => { mathStore.push({ tex: m, display: false }); return `@@MATH${mathStore.length - 1}@@`; });
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => { mathStore.push({ tex: m, display: true }); return `__KATEX_PLACEHOLDER_${mathStore.length - 1}__`; });
+  text = text.replace(/\$([^\n$]+?)\$/g, (_, m) => { mathStore.push({ tex: m, display: false }); return `__KATEX_PLACEHOLDER_${mathStore.length - 1}__`; });
 
   let html = marked.parse(text);
 
@@ -532,7 +506,7 @@ function renderMarkdownToHtml(raw) {
     let rendered;
     try { rendered = katex.renderToString(m.tex, { throwOnError: false, displayMode: m.display }); }
     catch { rendered = escapeHtml(m.tex); }
-    html = html.replace(`@@MATH${i}@@`, rendered);
+    html = html.replace(`__KATEX_PLACEHOLDER_${i}__`, rendered);
   });
 
   return thinkingHtml + html;
@@ -550,7 +524,7 @@ function enhanceCodeBlocks(container) {
       "div", { class: "codeblock-head", onclick: (e) => { if (e.target.tagName !== "BUTTON") wrap.classList.toggle("collapsed"); } },
       el("span", {}, lang),
       el("div", { class: "cb-actions" },
-        el("button", { onclick: (e) => { e.stopPropagation(); copyToClipboard(block.textContent, "Code copied"); } }, "Copy"),
+        el("button", { onclick: (e) => { e.stopPropagation(); navigator.clipboard.writeText(block.textContent); toast("Code copied"); } }, "Copy"),
         el("button", { onclick: (e) => { e.stopPropagation(); wrap.classList.toggle("collapsed"); } }, "Toggle"))
     );
     pre.parentNode.insertBefore(wrap, pre);
@@ -559,13 +533,8 @@ function enhanceCodeBlocks(container) {
   });
 }
 
-function formatMarkdownTables(container) {
-  // marked+gfm already handles standard pipe tables; nothing extra required,
-  // styling is handled in CSS (.bubble table).
-}
-
 /* ---------------------------------------------------------------------------
-   8. FILE HANDLING — upload, PDF.js / Mammoth.js extraction
+   8. FILE HANDLING
 --------------------------------------------------------------------------- */
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 const FILE_TRUNCATE_LIMIT = 50000;
@@ -589,7 +558,6 @@ async function extractFileText(file) {
     const result = await mammoth.extractRawText({ arrayBuffer: buf });
     return result.value;
   }
-  // plain-text-like formats
   return await file.text();
 }
 
@@ -652,9 +620,6 @@ function renderWelcome() {
 
 function scrollToBottom() { $("#chat-scroll").scrollTop = $("#chat-scroll").scrollHeight; }
 
-/* ---- Scroll-to-bottom FAB: appears when the user has scrolled up away
-   from the latest message (e.g. to read earlier context while a response
-   is streaming), and jumps back down on click. ---- */
 (function scrollFab() {
   const scrollEl = $("#chat-scroll");
   const fab = $("#scroll-bottom-fab");
@@ -664,6 +629,12 @@ function scrollToBottom() { $("#chat-scroll").scrollTop = $("#chat-scroll").scro
 })();
 
 function renderAllMessages() {
+  // Clear any pending quota countdown intervals
+  for (const [id, interval] of state.quotaIntervals) {
+    clearInterval(interval);
+  }
+  state.quotaIntervals.clear();
+
   const s = getCurrentSession();
   chatInner.innerHTML = "";
   if (!s || s.messages.length === 0) { renderWelcome(); return; }
@@ -690,21 +661,14 @@ function buildMessageRow(m) {
 
   const PROVIDER_LABELS = { google: "Google", duckduckgo: "DDG" };
   const sourcesRow = (!isUser && m.sources && m.sources.length)
-    ? (() => {
-        const chipsWrap = el("div", { class: "sources-chips" },
-          ...m.sources.slice(0, 8).map((s) =>
-            el("a", { class: "source-chip", href: s.uri, target: "_blank", rel: "noopener noreferrer", title: s.uri },
-              s.provider && PROVIDER_LABELS[s.provider] ? el("span", { class: "provider-badge" }, PROVIDER_LABELS[s.provider]) : null,
-              (s.title || s.uri || "").slice(0, 40))));
-        const wrap = el("div", { class: "sources-row" });
-        const toggle = el("button", { class: "sources-toggle", onclick: () => wrap.classList.toggle("expanded") },
-          el("svg", { class: "chev", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "3", html: '<path d="M6 9l6 6 6-6"/>' }),
+    ? el("div", { class: "sources-row" },
+        el("span", { class: "sources-label" },
           el("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", html: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20z"/>' }),
-          `Sources (${m.sources.length})`);
-        wrap.appendChild(toggle);
-        wrap.appendChild(chipsWrap);
-        return wrap;
-      })()
+          "Sources"),
+        ...m.sources.slice(0, 8).map((s) =>
+          el("a", { class: "source-chip", href: s.uri, target: "_blank", rel: "noopener noreferrer", title: s.uri },
+            s.provider && PROVIDER_LABELS[s.provider] ? el("span", { class: "provider-badge" }, PROVIDER_LABELS[s.provider]) : null,
+            (s.title || s.uri || "").slice(0, 40))))
     : null;
 
   const meta = el("div", { class: "msg-meta" },
@@ -713,7 +677,7 @@ function buildMessageRow(m) {
   );
 
   const actions = el("div", { class: "msg-actions" });
-  actions.appendChild(iconActionBtn("copy", () => copyToClipboard(m.content)));
+  actions.appendChild(iconActionBtn("copy", () => { navigator.clipboard.writeText(m.content); toast("Copied to clipboard"); }));
   if (isUser) {
     actions.appendChild(iconActionBtn("edit", () => beginEditMessage(m, bubble)));
   } else {
@@ -751,7 +715,6 @@ function iconActionBtn(kind, onclick, active = false) {
     el("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", html: ICONS[kind] }));
 }
 
-/* ---- message action implementations ---- */
 function beginEditMessage(m, bubble) {
   bubble.classList.add("editing");
   bubble.innerHTML = "";
@@ -766,7 +729,6 @@ function commitEditMessage(m, newText) {
   const s = getCurrentSession();
   const idx = s.messages.findIndex((x) => x.id === m.id);
   if (idx === -1) return;
-  // Truncate everything after this message, update content, resend.
   s.messages = s.messages.slice(0, idx + 1);
   s.messages[idx].content = newText;
   persistSessions(); saveCurrentSession();
@@ -777,7 +739,7 @@ function retryMessage(m) {
   const s = getCurrentSession();
   const idx = s.messages.findIndex((x) => x.id === m.id);
   if (idx === -1) return;
-  s.messages = s.messages.slice(0, idx); // drop this AI message and anything after
+  s.messages = s.messages.slice(0, idx);
   persistSessions(); saveCurrentSession();
   renderAllMessages();
   streamAssistantReply();
@@ -787,6 +749,10 @@ function deleteMessage(m) {
     title: "Delete this message?",
     message: "This message will be removed from the conversation history.",
     onConfirm: () => {
+      if (state.quotaIntervals.has(m.id)) {
+        clearInterval(state.quotaIntervals.get(m.id));
+        state.quotaIntervals.delete(m.id);
+      }
       const s = getCurrentSession();
       s.messages = s.messages.filter((x) => x.id !== m.id);
       persistSessions(); saveCurrentSession();
@@ -832,8 +798,7 @@ function speakText(text) {
 }
 
 /* ---------------------------------------------------------------------------
-   9b. RESPONSE CACHE — up to 15 entries, 5-minute TTL, keyed by the exact
-       request payload (same messages + same generation settings).
+   9b. RESPONSE CACHE
 --------------------------------------------------------------------------- */
 const RESPONSE_CACHE_LIMIT = 15;
 const RESPONSE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -902,10 +867,6 @@ function sendMessage() {
   $("#char-counter").textContent = "0 chars · ~0 tokens";
 
   if (s.messages.length === 1 && s.titleAuto) {
-    // Instant, offline-safe fallback so the session is never left as
-    // "New Conversation" even if the network/title API is unavailable —
-    // this gets replaced by the smarter AI-generated title once the first
-    // reply completes (see finishGeneration).
     s.title = fallbackTitleFromText(raw) || s.title;
     renderSessionList();
     $("#topbar-title").textContent = s.title;
@@ -916,9 +877,6 @@ function sendMessage() {
   streamAssistantReply();
 }
 
-// Simple, instant, no-network title: first few words of the user's message,
-// title-cased and truncated. Used as an immediate placeholder and as the
-// final fallback if the AI title-generation call fails.
 function fallbackTitleFromText(text) {
   const cleaned = (text || "").replace(/\[FILE:[\s\S]*?\[\/FILE\]/gi, "").trim();
   if (!cleaned) return null;
@@ -942,6 +900,10 @@ function streamAssistantReply() {
 
   state.abortController = new AbortController();
 
+  // Determine provider from selected model
+  const selectedModel = MODELS.find((m) => m.id === state.model);
+  const provider = selectedModel?.provider || "gemini";
+
   const payload = {
     messages: s.messages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
     persona: state.persona,
@@ -954,6 +916,7 @@ function streamAssistantReply() {
     temperature: state.temperature,
     maxTokens: state.maxTokens,
     model: state.model,
+    provider: provider,
   };
 
   let buffer = "";
@@ -999,7 +962,7 @@ function streamAssistantReply() {
         if (done) break;
         sseBuf += decoder.decode(value, { stream: true });
         const events = sseBuf.split("\n\n");
-        sseBuf = events.pop(); // last partial chunk stays in buffer
+        sseBuf = events.pop();
         for (const evt of events) {
           const lines = evt.split("\n");
           const eventType = (lines.find((l) => l.startsWith("event:")) || "").replace("event:", "").trim();
@@ -1012,8 +975,6 @@ function streamAssistantReply() {
             buffer += data.text;
             scheduleRender();
           } else if (eventType === "reset") {
-            // Backend discarded a partial attempt and is retrying with a
-            // fallback key/model — wipe local buffer so text doesn't garble.
             buffer = "";
             gotFirstChunk = false;
             bubble.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
@@ -1037,11 +998,6 @@ function streamAssistantReply() {
               localStorage.setItem("ssc_analytics", JSON.stringify(state.analytics));
               cacheSet(cacheKey, { text: buffer, model: data.modelUsed, sources: aiMsg.sources || [] });
             } else {
-              // Safety net: a successful call that still produced no visible
-              // text (rare now that the backend disables invisible Gemini
-              // "thinking" tokens and auto-retries across every key/model on
-              // empty output, but shown clearly rather than a blank bubble
-              // if it ever happens).
               aiMsg.isErrorPlaceholder = true;
               aiMsg.content = "SSC AI didn't return any visible text for this prompt. Try rephrasing, or retry.";
             }
@@ -1081,22 +1037,11 @@ function finishGeneration(s, aiMsg, buffer, isError = false) {
   renderAllMessages();
   checkIfLooksTruncated(buffer);
   if (!isError && buffer) fetchSuggestions(s);
-  // Now that the first exchange is complete, ask the AI for a sharper title
-  // (it has both the question and the answer to work with). Only do this
-  // once, and only if the user hasn't already renamed the conversation.
   if (!isError && buffer && s.titleAuto && s.messages.filter((m) => m.role === "assistant").length === 1) {
     generateSmartTitle(s);
   }
 }
 
-// Renders a live countdown (updating every second) in a message bubble when
-// the backend tells us how long until a rate-limited key/model should be
-// available again, instead of a generic "try again shortly" message.
-// Keeps aiMsg.content in sync on every tick (as plain text) so that any
-// subsequent full re-render (renderAllMessages) reflects the current
-// countdown state instead of the message's original empty content, and
-// looks up the live bubble element by message id each tick since a
-// re-render replaces DOM nodes wholesale.
 function renderQuotaCountdown(aiMsg, seconds) {
   let remaining = Math.ceil(seconds);
   const textFor = (r) => r > 0
@@ -1108,11 +1053,16 @@ function renderQuotaCountdown(aiMsg, seconds) {
     if (liveBubble) liveBubble.innerHTML = `<span style="color:var(--danger)">${escapeHtml(aiMsg.content)}</span>`;
   };
   render();
+  if (state.quotaIntervals.has(aiMsg.id)) {
+    clearInterval(state.quotaIntervals.get(aiMsg.id));
+    state.quotaIntervals.delete(aiMsg.id);
+  }
   const interval = setInterval(() => {
     remaining -= 1;
-    if (remaining <= 0) { remaining = 0; render(); clearInterval(interval); return; }
+    if (remaining <= 0) { remaining = 0; render(); clearInterval(interval); state.quotaIntervals.delete(aiMsg.id); return; }
     render();
   }, 1000);
+  state.quotaIntervals.set(aiMsg.id, interval);
 }
 
 function updateSendStopButton() {
@@ -1138,7 +1088,6 @@ $("#continue-btn").addEventListener("click", () => {
   streamAssistantReply();
 });
 
-/* ---- AI-generated suggestion chips after a reply ---- */
 async function fetchSuggestions(s) {
   try {
     const conversationText = s.messages.slice(-6).map((m) => `${m.role}: ${m.content}`).join("\n").slice(0, 6000);
@@ -1163,15 +1112,13 @@ async function generateSmartTitle(session) {
     });
     if (!res.ok) return;
     const { title } = await res.json();
-    // The user may have manually renamed this session (or it may have been
-    // deleted) while the request was in flight — don't clobber their choice.
     if (title && session.titleAuto && state.sessions.some((s) => s.id === session.id)) {
       session.title = title;
       persistSessions();
       renderSessionList();
       if (state.currentSessionId === session.id) $("#topbar-title").textContent = title;
     }
-  } catch { /* network unavailable — the instant fallback title set in sendMessage() remains */ }
+  } catch { /* ignore */ }
 }
 
 async function summarizeSession(session) {
@@ -1197,13 +1144,13 @@ function showSummaryModal(title, summaryText) {
   );
   const foot = $("#confirm-foot");
   foot.innerHTML = "";
-  foot.appendChild(el("button", { class: "btn", onclick: () => copyToClipboard(summaryText, "Summary copied") }, "Copy"));
+  foot.appendChild(el("button", { class: "btn", onclick: () => { navigator.clipboard.writeText(summaryText); toast("Summary copied"); } }, "Copy"));
   foot.appendChild(el("button", { class: "btn primary", onclick: () => closeModal("confirm-overlay") }, "Close"));
   openModal("confirm-overlay");
 }
 
 /* ---------------------------------------------------------------------------
-   11. VOICE INPUT (Web Speech API)
+   11. VOICE INPUT
 --------------------------------------------------------------------------- */
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognizer = null, isRecording = false;
@@ -1235,8 +1182,7 @@ async function checkBackendHealth() {
 }
 
 /* ---------------------------------------------------------------------------
-   13. SETTINGS MODAL (General / Language / Templates / Chat / Generation /
-       Export / Share / Analytics)
+   13. SETTINGS MODAL
 --------------------------------------------------------------------------- */
 const SETTINGS_TABS = ["General", "Language", "Templates", "Chat", "Generation", "Export", "Share", "Analytics"];
 let activeSettingsTab = "General";
@@ -1370,8 +1316,6 @@ $("#pinned-btn").addEventListener("click", () => { activeSettingsTab = "Chat"; r
 $("#analytics-btn").addEventListener("click", () => { activeSettingsTab = "Analytics"; renderSettingsTabs(); renderSettingsBody(); openModal("settings-overlay"); });
 
 async function exportSessionPdf(session) {
-  // Lightweight print-to-PDF path: opens a print-ready window using the
-  // browser's native "Save as PDF" — zero extra dependencies, works offline.
   const w = window.open("", "_blank");
   const bodyHtml = session.messages.map((m) => `<p><b>${m.role === "user" ? "You" : "SSC AI"}:</b><br>${renderMarkdownToHtml(m.content)}</p>`).join("<hr>");
   w.document.write(`<html><head><title>${session.title}</title><style>body{font-family:sans-serif;padding:30px;max-width:700px;margin:auto;} hr{border:none;border-top:1px solid #ccc;margin:16px 0;}</style></head><body><h2>${session.title}</h2>${bodyHtml}</body></html>`);
@@ -1411,7 +1355,7 @@ function loadFromShareLink() {
     persistSessions();
     state.currentSessionId = s.id;
     toast("Loaded shared conversation");
-  } catch { /* ignore malformed share link */ }
+  } catch { /* ignore */ }
 }
 
 async function init() {
@@ -1434,15 +1378,9 @@ async function init() {
 init();
 
 /* ---------------------------------------------------------------------------
-   15. OFFLINE SUPPORT — service worker registration + connectivity banner
+   15. OFFLINE SUPPORT - service worker removed
 --------------------------------------------------------------------------- */
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {
-      /* offline-first is a nice-to-have, not a hard requirement — fail silently */
-    });
-  });
-}
+// Service worker registration removed – no sw.js provided.
 
 (function connectivityBanner() {
   let banner = null;
